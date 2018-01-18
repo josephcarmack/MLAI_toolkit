@@ -1,4 +1,5 @@
 # Prerequisites
+*.dep
 *.d
 
 # Compiled Object files
@@ -30,3 +31,9 @@
 *.exe
 *.out
 *.app
+
+# VIM
+*.swp
+
+# DATA
+*.arff
