@@ -1,46 +1,24 @@
 /*
  * knn.cpp
- * Copyright (C) 2017 joseph <joseph@JMC-WORKSTATION>
+ * Copyright (C) 2017 joseph Carmack
  *
  * Distributed under terms of the MIT license.
  */
 
 #include "knn.h"
-#include <iostream>
-#include <cmath>
 
-using std::cout;
-using std::endl;
 
 /*****************************************************
  * Constructor
  *****************************************************/
 
-KNN::KNN(const Matrix& inFeat, const Matrix& inLab, bool kdtree)
-    : m_modelFeat(inFeat), m_modelLab(inLab),myTree(inFeat)
+KNN::KNN(const Matrix& inFeat, const Matrix& inLab, size_t inLeafLimit)
+    : \
+            m_modelFeat(inFeat),\
+            m_modelLab(inLab),\
+            myTree(inFeat)
 {
-    useKdTree = kdtree;
-    // compute the standard deviations of each feature
-    for(size_t feat=0; feat<inFeat.cols();feat++)
-    {
-        // ignore categorical features
-        if(inFeat.m_attrIsCateg.at(feat))
-        {
-            standDev.push_back(0.0);
-        }
-        else
-        {
-            double mean = inFeat.columnMean(feat);
-            double variance = 0.0;
-            for(size_t i=0; i<inFeat.rows(); i++)
-            {
-                double diff = inFeat[i][feat] - mean;
-                variance += diff*diff;
-            }
-            double STD = std::sqrt(variance/(inFeat.rows()-1));
-            standDev.push_back(STD);
-        }
-    }
+    leafLimit = inLeafLimit;
 }
 
 
@@ -56,21 +34,25 @@ KNN::~KNN()
 
 
 /*****************************************************
- * make a prediction using k-nearest neighbors
+ * Make a prediction using k-nearest neighbors. For 
+ * real valued data, the computed label is an average
+ * of its k-nearest neighbor values linearly weighted
+ * by the distance of each neighbor to the point. For
+ * Categorical data, the label is computed as the most
+ * frequent label found amoung its k-nearest neighbors
+ * where frequency is weighted by distance to the data 
+ * point.
  *****************************************************/
 
 void KNN::predict(size_t k, const Vec& inFeat, Vec& outLab)
 {
-    // resize the outLab Vec
+    // resize the outLab Vec to appropriate size
     outLab.resize(m_modelLab.cols());
 
     // find k-nearest neighbors
     std::vector<size_t> indices;
-    std::vector<double> weights;
-    if(useKdTree)
-        myTree.findNeighbors(k,inFeat,indices,weights);
-    else
-        findNeighborsByBruteForce(inFeat,m_modelFeat,k,indices,weights);
+    std::vector<double> distances;
+    myTree.findNeighbors(k,inFeat,indices,distances);
 
     // compute the return label Vec by averaging for real values
     // and using highest frequency for categorical values 
@@ -86,7 +68,7 @@ void KNN::predict(size_t k, const Vec& inFeat, Vec& outLab)
             for(size_t nbr=0; nbr<k; nbr++)
             {
                 size_t val = m_modelLab[indices[nbr]][lab];
-                catFreq[val] += weights[nbr];
+                catFreq[val] += 1.0/distances[nbr];
             }
             std::pair<size_t,double> ind_max(0,catFreq[0]);
             for(size_t i=1; i<numCat;i++)
@@ -100,13 +82,13 @@ void KNN::predict(size_t k, const Vec& inFeat, Vec& outLab)
         }
         else
         {
-            // compute weighted mean
+            // compute weighted mean (linear weighting)
             double mean = 0.0;
             double weightSum = 0.0;
             for(size_t nbr=0; nbr<k; nbr++)
             {
                 mean += m_modelLab[indices[nbr]][lab];
-                weightSum += weights[nbr];
+                weightSum += 1.0/distances[nbr];
             }
             mean = mean/weightSum;
             outLab[lab] = mean;
@@ -117,77 +99,12 @@ void KNN::predict(size_t k, const Vec& inFeat, Vec& outLab)
 
 
 /*****************************************************
- * Brute force method for finding the k-nearest
- * neighbors of the input point which is a feature
- * vector.
+ * Resets the leafLimit for the kdTree storing the 
+ * model data and rebuilds the kdTree.
  *****************************************************/
 
-void KNN::findNeighborsByBruteForce(
-        const Vec& point,
-        const Matrix& data,
-        size_t k,
-        std::vector<size_t>& outIndexes,
-        std::vector<double>& weights
-        )
+void KNN::setLeafLimit(size_t inLeafLimit)
 {
-    std::vector< std::pair < size_t,double > > index_dist;
-    for(size_t i=0; i< data.rows(); i++)
-    {
-        double dist = computeDistance(point, data[i]);
-        index_dist.push_back(std::pair<size_t,double>(i,dist));
-    }
-    std::sort(index_dist.begin(),index_dist.end(),myComparator);
-    outIndexes.resize(k);
-    weights.resize(k);
-    // return k-nearest neighbors and weights
-    for(size_t i=0; i<k; i++)
-    {
-        outIndexes[i] = index_dist[i].first;
-        weights[i] = 1.0/index_dist[i].second;
-    }
-}
-
-
-
-/*****************************************************
- * compute the distance between two feature vectors.
- * Uses Mahalanobis distance for real values and 
- * Hamming distance for categorical values
- *****************************************************/
-
-double KNN::computeDistance(const Vec& pointA, const Vec& pointB)
-{
-    if(pointA.size() != pointB.size())
-        throw Ex("cannot compute distance between vectors with different sizes!");
-
-    double dist = 0.0;
-    for(size_t i=0; i<pointA.size(); i++)
-    {
-        if(m_modelFeat.m_attrIsCateg.at(i))
-        {
-            // use hamming distance
-            if(pointA[i] != pointB[i])
-                dist += 1.0;
-        }
-        else
-        {
-            // use Mahalanobis distance
-            double diff = (pointA[i] - pointB[i])/standDev.at(i);
-            dist += diff*diff;
-        }
-    }
-    dist = std::sqrt(dist);
-    return dist;
-}
-
-
-
-/*****************************************************
- * A comparison method for sorting neighbor distances.
- *****************************************************/
-
-bool KNN::myComparator(const std::pair<size_t,double>& a,
-        const std::pair<size_t,double>& b)
-{
-    return (a.second < b.second);
+    myTree.leafLimit = inLeafLimit;
+    myTree.m_pRoot = myTree.buildKdTree(myTree.m_indexes);
 }

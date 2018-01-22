@@ -1,6 +1,6 @@
 /*
  * knn.h
- * Copyright (C) 2017 joseph <joseph@JMC-WORKSTATION>
+ * Copyright (C) 2017 joseph Carmack
  *
  * Distributed under terms of the MIT license.
  */
@@ -8,46 +8,37 @@
 #ifndef KNN_H
 #define KNN_H
 
-# include <utility>
-# include <algorithm> // for sort
 # include "matrix.h"
 # include "vec.h"
-# include "error.h"
 # include "kdtree.h"
 
 class KNN
 {
     public:
-        // members
+        // data that makes up the knn model
         const Matrix& m_modelFeat;
         const Matrix& m_modelLab;
 
-        //methods
-        KNN(const Matrix& inFeat, const Matrix& inLab,bool kdtree=true);
+        // constructor and destructor
+        KNN(const Matrix& inFeat, const Matrix& inLab, size_t inLeafLimit=8);
         ~KNN();
+
+        // make a prediction using "k" neighbors. "inFeat"
+        // is the input feature vector and "outLab" is where
+        // the prediction is stored.
         void predict(size_t k,const Vec& inFeat, Vec& outLab);
 
+        // changes the number of points per leaf of the kdTree
+        // and rebuilds the kdTree accordingly
+        void setLeafLimit(size_t inLeafLimit);
+
     private:
-        // members
-        std::vector<double> standDev;
-        KdTree myTree;
-        bool useKdTree;
+        // Put data in kdTree for efficiently finding neighbors
+        KdTree myTree; 
 
-        // methods
-        double computeDistance(const Vec& pointA, const Vec& pointB);
-
-        // find neighbors and weights
-        void findNeighborsByBruteForce(
-                const Vec& point,
-                const Matrix& data,
-                size_t k, 
-                std::vector<size_t>& outIndexes,
-                std::vector<double>& weights
-                );
-
-        // method for sorting list of neighbors by distance
-        static bool myComparator(const std::pair<size_t,double>& a,
-                const std::pair<size_t,double>& b);
+        // parameter that determines the number of data points
+        // stored per leaf node of the KdTree
+        size_t leafLimit;
 };
 
 #endif /* !KNN_H */
