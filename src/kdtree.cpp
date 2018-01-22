@@ -7,14 +7,10 @@
 
 #include "kdtree.h"
 #include "vec.h"
-#include <cmath>
-#include <algorithm>
-#include <iostream>
-#include <queue>
+#include <cmath> // for sqrt
+#include <queue> // for priority_queue
 #include <vector>
 
-using std::cout;
-using std::endl;
 using std::vector;
 using std::priority_queue;
 
@@ -24,36 +20,17 @@ KdTree::KdTree(const Matrix& points)
     // copy the data
     m_points.copyMetaData(points);
     m_points.copy(points);
-    vector<size_t> indexes;
     // create a list of data point indexes (i.e.
     // row numbers from the data matrix).
     for(size_t i = 0; i < points.rows(); i++)
-        indexes.push_back(i);
-
-    // get data mins and maxes for data normalization.
-    for(size_t i=0;i<m_points.cols();i++)
-        if(!m_points.m_attrIsCateg[i])
-        {
-            double min = m_points.columnMin(i);
-            double max = m_points.columnMax(i);
-            mins.push_back(min);
-            maxes.push_back(max);
-        }
-        else
-        {
-            mins.push_back(0.0);
-            maxes.push_back(0.0);
-        }
-
-    // normalize the real valued data
-    /* minMaxNormData(); */
+        m_indexes.push_back(i);
 
     // compute the standard deviations of each feature
     for(size_t feat=0; feat<m_points.cols();feat++)
     {
         // ignore categorical features
         if(m_points.m_attrIsCateg.at(feat))
-            standDev.push_back(0.0);
+            m_standDev.push_back(0.0);
         else
         {
             double mean = m_points.columnMean(feat);
@@ -64,23 +41,33 @@ KdTree::KdTree(const Matrix& points)
                 variance += diff*diff;
             }
             double STD = std::sqrt(variance/(m_points.rows()-1));
-            standDev.push_back(STD);
+            m_standDev.push_back(STD);
         }
     }
 
     // build the kdTree
-    m_pRoot = buildKdTree(indexes);
-
-    // undo data normalization
-    /* undoMinMaxNorm(); */
+    m_pRoot = buildKdTree(m_indexes);
 }
 
 
 
-KdNode* KdTree::buildKdTree(vector<size_t>& indexes)
+/**************************************************
+ * Takes a vector of data point indexes (i.e. row
+ * values from a Matrix object holding the data),
+ * and splits the data into leaf nodes with
+ * "leafLimit" number of data points per leaf. The
+ * data is in each interior node is split on the
+ * data dimension with the highest variance. Var-
+ * iance for real valued data is measured via the
+ * standard deviation. Variance for categorical 
+ * valued data is measured using normalized
+ * entropy.
+**************************************************/
+
+KdNode* KdTree::buildKdTree(vector<size_t>& indexes, size_t leafLimit)
 {
     size_t n = indexes.size();
-    if(n<=8)
+    if(n<=leafLimit)
     {
         return new KdNodeLeaf(indexes);
     }
@@ -177,7 +164,7 @@ KdNode* KdTree::buildKdTree(vector<size_t>& indexes)
         }
         else
         {
-            // slit on mean value for real valued features
+            // split on mean value for real valued features
             for(size_t i=0;i<n;i++)
                 if(m_points[indexes[i]][sDim] < means[sDim])
                     below.push_back(indexes[i]);
@@ -186,15 +173,15 @@ KdNode* KdTree::buildKdTree(vector<size_t>& indexes)
         }
 
         // spawn child nodes recursively
-        KdNode* lesser = buildKdTree(below);
-        KdNode* greater = buildKdTree(above);
+        KdNode* lesser = buildKdTree(below,leafLimit);
+        KdNode* greater = buildKdTree(above,leafLimit);
 
         // join child nodes to interior node
         double value;
         if(sDimCateg)
             value = (double)CLASS;
         else
-            value = means[sDim];//*(maxes[sDim]-mins[sDim])+mins[sDim];
+            value = means[sDim];
         KdNode* outNode = new KdNodeInterior(lesser,greater,sDim,value,sDimCateg); 
         return outNode;
     }
@@ -202,37 +189,65 @@ KdNode* KdTree::buildKdTree(vector<size_t>& indexes)
 
 
 
+/**************************************************
+ * Traverses the kdTree to leaf nodes containing
+ * data points closest to the data point of under
+ * consideration. This is done using two priority
+ * queues, one made of of nodes sorted by distance
+ * to the data point and one of points sorted by
+ * distance to the data point. The root node is
+ * added to the node priority que to start. The
+ * tree is then traversed by adding child nodes
+ * to the node queue and leaf nodes point distri-
+ * butions to the point queue. Searching stops
+ * when the distance to the nearest child node
+ * in the node queue is larger than the kth point
+ * in the point queue.
+ * ***********************************************/
+
 void KdTree::findNeighbors(size_t k, const Vec& point,
         vector<size_t>& outNeighborIndexes,
-        vector<double>& outWeights)
+        vector<double>& outDistances)
 {
     // reset all stored node distances to zero
     resetNodeDist();
+
     // priority queue of points sorted by distance from point
     priority_queue<pair<double,size_t>,vector<pair<double,size_t>>,pComp> pointSet;    
+
     // priority queue of KdNodes sorted by distance from point
     priority_queue<pair<double,KdNode*>,vector<pair<double,KdNode*>>,nComp> nodeSet;    
 
     // add root node to node priority queue
     nodeSet.push(pair<double,KdNode*>(0.0,m_pRoot));
+
+    // traverse the kdTree searching for k-nearest neighbors
     while(!nodeSet.empty())
     {
+        // identify kdNode at the top of the node queue
         KdNode* n = nodeSet.top().second;
         double nDist = nodeSet.top().first;
+
+        // remove the node from the queue
         nodeSet.pop();
+
+        // if node is a leaf then add its points to the point queue
         if(n->isLeaf())
         {
             KdNodeLeaf* nn = dynamic_cast<KdNodeLeaf*>(n);
-            // compute distances to all points in leaf node and
-            // add to the points queue
+            // compute distances to all points in leaf node 
             vector<size_t>& nP = nn->m_pointIndexes;
             
+            // add to the points queue
             for(size_t i=0;i<nP.size();i++)
             {
                 double d = compDist(point,m_points[nP[i]]);
                 pointSet.push(pair<double,size_t>(d,nP[i]));
             }
         }
+        // if the node is an interior node, check if done searching.
+        // If not done searching, add its child nodes to the node
+        // queue
         else
         {
             KdNodeInterior* nn = dynamic_cast<KdNodeInterior*>(n);
@@ -251,7 +266,7 @@ void KdTree::findNeighbors(size_t k, const Vec& point,
                 for(size_t i=0;i<k;i++)
                     pointSet.push(putBack[i]);
                 if(nDist > kthDist)
-                    break;
+                    break; // break out of the while loop
             }
 
             // compute distances from child nodes to point
@@ -270,20 +285,28 @@ void KdTree::findNeighbors(size_t k, const Vec& point,
     for(size_t i=0;i<k;i++)
     {
         outNeighborIndexes.push_back(pointSet.top().second);
-        outWeights.push_back(1.0/pointSet.top().first);
+        outDistances.push_back(pointSet.top().first);
         pointSet.pop();
     }
 }
 
 
 
+/**************************************************
+ * Computes the distance between a data point and
+ * the two child nodes of an interior kdNode. This
+ * is needed to determine which child node to visit
+ * next in order to find the next nearest neighbor
+ * to the data point of interest.
+ * ***********************************************/
 
 void KdTree::compNodeDist(const Vec& point,KdNode* lesser,KdNode* greater,KdNodeInterior* parent,double& outDLesser, double& outDGreater)
 {
     // set child node distance to the distance of the parent node
     lesser->pointDist.copy(parent->pointDist);
     greater->pointDist.copy(parent->pointDist);
-    // get split dim and value from parent node
+
+    // get split dim and value from the parent node
     size_t sd = parent->sDim;
     double val = parent->value;
     if(parent->sDimCateg)
@@ -298,48 +321,26 @@ void KdTree::compNodeDist(const Vec& point,KdNode* lesser,KdNode* greater,KdNode
     {
         // check if point is above split feature
         if(point[sd] >= val)
-            lesser->pointDist[sd] = (point[sd] - val)/standDev[sd];
+            lesser->pointDist[sd] = (point[sd] - val)/m_standDev[sd];
         else
-            greater->pointDist[sd] = (point[sd] - val)/standDev[sd];
+            greater->pointDist[sd] = (point[sd] - val)/m_standDev[sd];
     }
 
-    // calculate node distances
+    // calculate and return node distances
     outDLesser = lesser->pointDist.squaredMagnitude();
     outDGreater = greater->pointDist.squaredMagnitude();
-}
-
-
-void KdTree::minMaxNormData()
-{
-    for(size_t j=0;j<m_points.cols();j++)
-    {
-        if(!m_points.m_attrIsCateg[j])
-            for(size_t i=0;i<m_points.rows();i++)
-            {
-                m_points[i][j] = (m_points[i][j]-mins[j]);
-                m_points[i][j] = m_points[i][j]/(maxes[j]-mins[j]);
-            }
-    }
-
+    outDLesser = sqrt(outDLesser);
+    outDGreater = sqrt(outDGreater);
 }
 
 
 
-void KdTree::undoMinMaxNorm()
-{
-    for(size_t j=0;j<m_points.cols();j++)
-    {
-        if(!m_points.m_attrIsCateg[j])
-            for(size_t i=0;i<m_points.rows();i++)
-            {
-                m_points[i][j] = m_points[i][j]*(maxes[j]-mins[j]);
-                m_points[i][j] += mins[j];
-            }
-    }
-
-}
-
-
+/**************************************************
+ * Computes the distance between two data points.
+ * For real valued data, Mahalanobis distance is
+ * used. For categorical data, hamming distance is
+ * used
+ * ***********************************************/
 
 double KdTree::compDist(const Vec& pointA, const Vec& pointB)
 {
@@ -351,14 +352,14 @@ double KdTree::compDist(const Vec& pointA, const Vec& pointB)
     {
         if(m_points.m_attrIsCateg.at(i))
         {
-            // use hamming distance
+            // use hamming distance for categorical data
             if(pointA[i] != pointB[i])
                 dist += 1.0;
         }
         else
         {
-            // use Mahalanobis distance
-            double diff = (pointA[i] - pointB[i])/standDev.at(i);
+            // use Mahalanobis distance for real valued data
+            double diff = (pointA[i] - pointB[i])/m_standDev.at(i);
             dist += diff*diff;
         }
     }
@@ -367,21 +368,34 @@ double KdTree::compDist(const Vec& pointA, const Vec& pointB)
 }
 
 
+
+/**************************************************
+ * Starts at the root node of the KdTree and 
+ * travels down the tree zeroing out the poinDist
+ * vector of each kdNode.
+ * ***********************************************/
+
 void KdTree::resetNodeDist()
 {
-    vector<KdNode*> nodes;
-    nodes.push_back(m_pRoot);
-    while(!nodes.empty())
+    // add root node to vector of nodes that need zeroing
+    vector<KdNode*> needsZeroing;
+    needsZeroing.push_back(m_pRoot);
+    while(!needsZeroing.empty())
     {
-        KdNode* n = nodes.back();
-        nodes.pop_back();
+        KdNode* n = needsZeroing.back();
+        needsZeroing.pop_back();
         n->pointDist.resize(m_points.cols());
         n->pointDist.fill(0.0);
+
+        // if node is not a leaf, add its child nodes to the
+        // vector of nodes that still needs zeroing
         if(!n->isLeaf())
         {
-            // add child nodes to nodes vec
-            nodes.push_back(dynamic_cast<KdNodeInterior*>(n)->less_than);
-            nodes.push_back(dynamic_cast<KdNodeInterior*>(n)->greater_or_equal);
+            KdNode* child;
+            child = dynamic_cast<KdNodeInterior*>(n)->less_than;
+            needsZeroing.push_back(child);
+            child = dynamic_cast<KdNodeInterior*>(n)->greater_or_equal;
+            needsZeroing.push_back(child);
         }
     }
 }
