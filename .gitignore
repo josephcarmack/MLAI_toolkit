@@ -37,3 +37,6 @@
 
 # DATA
 *.arff
+
+# JSON
+*.json
